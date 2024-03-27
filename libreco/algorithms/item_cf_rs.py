@@ -1,8 +1,8 @@
-"""Implementation of RsUserCF."""
+"""Implementation of RsItemCF."""
 from ..bases import RsCfBase
 
 
-class RsUserCF(RsCfBase):
+class RsItemCF(RsCfBase):
     def __init__(
         self,
         task,

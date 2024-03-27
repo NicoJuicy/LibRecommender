@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import pytest
 
-from libreco.algorithms import RsUserCF
+from libreco.algorithms import RsItemCF
 from tests.utils_data import remove_path, set_ranking_labels
 from tests.utils_metrics import get_metrics
 from tests.utils_pred import ptest_preds
@@ -13,7 +13,7 @@ from tests.utils_save_load import save_load_model
 
 @pytest.mark.parametrize("task", ["rating", "ranking"])
 @pytest.mark.parametrize("neg_sampling", [True, False, None])
-def test_user_cf_rs(pure_data_small, task, neg_sampling):
+def test_item_cf_rs(pure_data_small, task, neg_sampling):
     if sys.version_info[:2] < (3, 7):
         pytest.skip("Rust implementation only supports Python >= 3.7.")
 
@@ -22,7 +22,7 @@ def test_user_cf_rs(pure_data_small, task, neg_sampling):
         set_ranking_labels(train_data)
         set_ranking_labels(eval_data)
 
-    model = RsUserCF(task=task, data_info=data_info, k_sim=20)
+    model = RsItemCF(task=task, data_info=data_info, k_sim=20)
     if neg_sampling is None:
         with pytest.raises(AssertionError):
             model.fit(train_data, neg_sampling)
@@ -46,10 +46,10 @@ def test_user_cf_rs(pure_data_small, task, neg_sampling):
             model.predict(user="cold user1", item="cold item2", cold_start="other")
 
         # test save and load model
-        loaded_model, loaded_data_info = save_load_model(RsUserCF, model, data_info)
+        loaded_model, loaded_data_info = save_load_model(RsItemCF, model, data_info)
         ptest_preds(loaded_model, task, pd_data, with_feats=False)
         ptest_recommends(loaded_model, loaded_data_info, pd_data, with_feats=False)
-        model.save("not_existed_path", "user_cf2")
+        model.save("not_existed_path", "item_cf2")
         remove_path("not_existed_path")
 
 
@@ -62,9 +62,9 @@ def test_all_consumed_recommend(pure_data_small, monkeypatch):
     set_ranking_labels(train_data)
     set_ranking_labels(eval_data)
 
-    model = RsUserCF(task="ranking", data_info=data_info)
+    model = RsItemCF(task="ranking", data_info=data_info)
     model.fit(train_data, neg_sampling=False, verbose=0)
-    model.save("not_existed_path", "user_cf2")
+    model.save("not_existed_path", "item_cf2")
     remove_path("not_existed_path")
     with monkeypatch.context() as m:
         m.setitem(model.user_consumed, 0, list(range(model.n_items)))
