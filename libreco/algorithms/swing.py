@@ -1,7 +1,7 @@
-"""Rust CF model base class."""
+"""Implementation of Swing."""
 import pathlib
 
-from .base import Base
+from ..bases import Base
 from ..evaluation import print_metrics
 from ..prediction.preprocess import convert_id
 from ..recommendation import construct_rec, popular_recommendations
@@ -11,52 +11,53 @@ from ..utils.sparse import build_sparse
 from ..utils.validate import check_fitting, check_unknown, check_unknown_user
 
 
-class RsCfBase(Base):
-    """
-    Base class for Rust CF models.
+class Swing(Base):
+    """*Swing* algorithm.
+
+    .. CAUTION::
+        + Swing can only be used in ``ranking`` task.
 
     Parameters
     ----------
-    task : {'rating', 'ranking'}
+    task : {'ranking'}
         Recommendation task. See :ref:`Task`.
     data_info : :class:`~libreco.data.DataInfo` object
         Object that contains useful information for training and inference.
-    k_sim : int, default: 20
-        Number of similar items to use.
+    top_k : int, default: 20
+        Number of items to consider during recommendation.
+    alpha : float, default: 1.0
+        Smoothing coefficient.
+    max_cache_num : int, default: 100,000,000
+        Maximum cached item number during swing score computing.
     num_threads : int, default: 1
         Number of threads to use.
-    min_common : int, default: 1
-        Number of minimum common users to consider when computing similarities.
-    mode : {'forward', 'invert'}, default: 'invert'
-        Whether to use forward index or invert index.
     seed : int, default: 42
         Random seed.
-    lower_upper_bound : tuple or None, default: None
-        Lower and upper score bound for `rating` task.
 
-    See Also
-    --------
-    ~libreco.algorithms.RsUserCF
-    ~libreco.algorithms.RsItemCF
+    References
+    ----------
+    *Xiaoyong Yang et al.* `Large Scale Product Graph Construction for Recommendation in E-commerce
+    <https://arxiv.org/pdf/2010.05525>`_.
     """
 
     def __init__(
         self,
         task,
         data_info,
-        k_sim=20,
+        top_k=20,
+        alpha=1.0,
+        max_cache_num=100_000_000,
         num_threads=1,
-        min_common=1,
-        mode="invert",
         seed=42,
-        lower_upper_bound=None,
     ):
-        super().__init__(task, data_info, lower_upper_bound)
+        super().__init__(task, data_info, lower_upper_bound=None)
 
-        self.k_sim = k_sim
+        assert task == "ranking", "`Swing` is only suitable for ranking task."
+        self.all_args = locals()
+        self.top_k = top_k
+        self.alpha = alpha
+        self.max_cache_num = max_cache_num
         self.num_threads = num_threads
-        self.min_common = min_common
-        self.mode = mode
         self.seed = seed
         self.rs_model = None
         self.incremental = False
@@ -78,36 +79,24 @@ class RsCfBase(Base):
         self.show_start_time()
         user_interacts = build_sparse(train_data.sparse_interaction)
         item_interacts = build_sparse(train_data.sparse_interaction, transpose=True)
-        rs_model_cls = (
-            recfarm.UserCF if "user" in self.model_name.lower() else recfarm.ItemCF
+        self.rs_model = recfarm.Swing(
+            self.task,
+            self.top_k,
+            self.alpha,
+            self.max_cache_num,
+            self.n_users,
+            self.n_items,
+            user_interacts,
+            item_interacts,
+            self.user_consumed,
+            self.default_pred,
         )
-        if self.incremental:
-            assert isinstance(self.rs_model, rs_model_cls)
-            with time_block("update similarity", verbose=1):
-                self.rs_model.update_similarities(user_interacts, item_interacts)
-        else:
-            self.rs_model = rs_model_cls(
-                self.task,
-                self.k_sim,
-                self.n_users,
-                self.n_items,
-                self.min_common,
-                user_interacts,
-                item_interacts,
-                self.user_consumed,
-                self.default_pred,
-            )
-            with time_block("similarity", verbose=1):
-                self.rs_model.compute_similarities(
-                    self.mode == "invert", self.num_threads
-                )
+        with time_block("swing computing", verbose=1):
+            self.rs_model.compute_swing(self.num_threads, self.incremental)
 
-        num = self.rs_model.num_sim_elements()
-        if "user" in self.model_name.lower():
-            density_ratio = 100 * num / (self.n_users * self.n_users)
-        else:
-            density_ratio = 100 * num / (self.n_items * self.n_items)
-        print(f"similarity num_elements: {num}, density: {density_ratio:5.4f} %")
+        num = self.rs_model.num_swing_elements()
+        density_ratio = 100 * num / (self.n_items * self.n_items)
+        print(f"swing num_elements: {num}, density: {density_ratio:5.4f} %")
         if verbose > 1:
             print_metrics(
                 model=self,
@@ -172,10 +161,7 @@ class RsCfBase(Base):
             print(f"file folder {path} doesn't exists, creating a new one...")
             path_obj.mkdir(parents=True, exist_ok=False)
         save_params(self, path, model_name)
-        if "user" in self.model_name.lower():
-            recfarm.save_user_cf(self.rs_model, path, model_name)
-        else:
-            recfarm.save_item_cf(self.rs_model, path, model_name)
+        recfarm.save_swing(self.rs_model, path, model_name)
 
     @classmethod
     def load(cls, path, model_name, data_info, **kwargs):
@@ -183,10 +169,7 @@ class RsCfBase(Base):
 
         hparams = load_params(path, data_info, model_name)
         model = cls(**hparams)
-        if "user" in cls.__name__.lower():
-            model.rs_model = recfarm.load_user_cf(path, model_name)
-        else:
-            model.rs_model = recfarm.load_item_cf(path, model_name)
+        model.rs_model = recfarm.load_swing(path, model_name)
         return model
 
     def rebuild_model(self, path, model_name):
@@ -204,10 +187,7 @@ class RsCfBase(Base):
         """
         import recfarm
 
-        if "user" in self.model_name.lower():
-            self.rs_model = recfarm.load_user_cf(path, model_name)
-        else:
-            self.rs_model = recfarm.load_item_cf(path, model_name)
+        self.rs_model = recfarm.load_swing(path, model_name)
         self.rs_model.n_users = self.n_users
         self.rs_model.n_items = self.n_items
         self.rs_model.user_consumed = self.user_consumed
